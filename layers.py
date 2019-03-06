@@ -23,19 +23,55 @@ class Embedding(nn.Module):
         hidden_size (int): Size of hidden activations.
         drop_prob (float): Probability of zero-ing out activations
     """
-    def __init__(self, word_vectors, hidden_size, drop_prob):
+    def __init__(self, word_vectors, char_vectors, hidden_size, drop_prob):
         super(Embedding, self).__init__()
         self.drop_prob = drop_prob
-        self.embed = nn.Embedding.from_pretrained(word_vectors)
-        self.proj = nn.Linear(word_vectors.size(1), hidden_size, bias=False)
-        self.hwy = HighwayEncoder(2, hidden_size)
+        self.embed_w = nn.Embedding.from_pretrained(word_vectors, freeze=False) #88714, 300
+        #(shape of character indices should be [batch_size, sentence_len, word_len])#
+        self.embed_c = nn.Embedding.from_pretrained(char_vectors, freeze=False) #1376, 64
+        self.kernel_size = 5
 
-    def forward(self, x):
-        emb = self.embed(x)   # (batch_size, seq_len, embed_size)
-        emb = F.dropout(emb, self.drop_prob, self.training)
+        #import pdb; pdb.set_trace();
+        self.max_word_len = 16
+        self.char_embed_size = 64
+        self.word_embed_size = 300
+        
+        self.conv = nn.Conv1d(self.char_embed_size, self.char_embed_size, kernel_size=self.kernel_size, stride=1, bias=True)
+        self.max_pool = nn.MaxPool1d(kernel_size=self.max_word_len-self.kernel_size+1)
+        #Concatenate word and character embeddings"""
+        #self.concat_embeddings = torch.cat((word_vectors, char_vectors), dim=2)
+        #print("CONCAT", concat_embeddings.size());
+        
+        self.proj = nn.Linear(word_vectors.size(1) + char_vectors.size(1), hidden_size, bias=False)
+        self.hwy = HighwayEncoder(2, hidden_size)
+        
+        #self.CNN = CNN(e_word=embed_size, e_char=50, m_word=21, kernel_size=5)
+
+    def forward(self, x, cc_idx):
+        emb_w = self.embed_w(x)   # (batch_size, seq_len, embed_size), ([64, 337, 300])
+        emb_w = F.dropout(emb_w, self.drop_prob, self.training) 
+
+        # cc_idx is 
+        # cc_idx = cc_idx.reshape(seq_len * batch_size, -1)
+        emb_c = self.embed_c(cc_idx) #[64, 337, 16, 64])
+        #import pdb; pdb.set_trace();  
+        (batch_size, seq_len, max_word_len, char_embed_size) = emb_c.shape;
+        
+        emb_c = emb_c.reshape(batch_size * seq_len, max_word_len, char_embed_size)
+        emb_c = emb_c.permute(0, 2, 1)
+        
+        c_conv = self.conv(emb_c)
+        c_relu = F.relu(c_conv)
+        c_pool = self.max_pool(c_relu)
+        c_squeeze = c_pool.squeeze()
+        c_final = c_squeeze.reshape(batch_size, seq_len, -1)
+
+        emb = torch.cat((emb_w, c_final), dim=2)
+
         emb = self.proj(emb)  # (batch_size, seq_len, hidden_size)
         emb = self.hwy(emb)   # (batch_size, seq_len, hidden_size)
-
+        #import pdb; pdb.set_trace();
+        
         return emb
 
 
